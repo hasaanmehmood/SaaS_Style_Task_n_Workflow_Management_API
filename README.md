@@ -7,9 +7,6 @@ A production-ready SaaS-style task management system built with Django REST Fram
 ![MySQL](https://img.shields.io/badge/MySQL-8.0-orange)
 ![Redis](https://img.shields.io/badge/Redis-7.0-red)
 ![Docker](https://img.shields.io/badge/Docker-Ready-blue)
----
-## 📋 Deep Wiki
-https://deepwiki.com/hasaanmehmood/SaaS_Style_Task_n_Workflow_Management_API
 
 ---
 
