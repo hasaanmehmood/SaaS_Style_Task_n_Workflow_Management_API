@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: taskapi_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass123}
+      MYSQL_DATABASE: ${DB_NAME:-taskdb4}
+      MYSQL_USER: ${DB_USER:-taskuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-taskpass123}
+      MYSQL_ROOT_HOST: '%'
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3308:3306"  # Changed from 3306:3306 to 3307:3306
+    volumes:
+      - mysql_data_v2:/var/lib/mysql
+      #- ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpass123}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - taskapi_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: taskapi_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - taskapi_network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taskapi_api
+    restart: unless-stopped
+    command: >
+      sh -c "
+           echo 'Waiting for MySQL...' &&
+           python wait_for_db.py &&
+           echo 'Creating migrations...' &&
+           python manage.py makemigrations --noinput &&
+           echo 'Running migrations...' &&
+           python manage.py migrate --noinput &&
+           echo 'Collecting static files...' &&
+           python manage.py collectstatic --noinput &&
+           echo 'Starting Gunicorn...' &&
+           gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120 --log-level info --access-logfile - --error-logfile -
+         "
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DJANGO_SETTINGS_MODULE=config.settings
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - taskapi_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taskapi_celery
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for services...' &&
+        sleep 10 &&
+        celery -A config worker -l info --concurrency=2
+      "
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DJANGO_SETTINGS_MODULE=config.settings
+    depends_on:
+      - redis
+      - mysql
+      - api
+    networks:
+      - taskapi_network
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taskapi_celery_beat
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for services...' &&
+        sleep 15 &&
+        celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+      "
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DJANGO_SETTINGS_MODULE=config.settings
+    depends_on:
+      - redis
+      - mysql
+      - api
+    networks:
+      - taskapi_network
+
+volumes:
+  mysql_data_v2:  # Add _v2 to create NEW volume
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  media_volume:
+    driver: local
+
+networks:
+  taskapi_network:
+    driver: bridge
